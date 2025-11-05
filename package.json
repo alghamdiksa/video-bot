@@ -1,0 +1,21 @@
+{
+  "name": "video-bot",
+  "version": "1.0.0",
+  "description": "Telegram video downloader bot (Telegraf + yt-dlp)",
+  "type": "commonjs",
+  "main": "index.js",
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "start": "node index.js",
+    "dev": "NODE_ENV=development node index.js",
+    "set:webhook": "node index.js --set-webhook",
+    "del:webhook": "node index.js --delete-webhook"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "ffmpeg-static": "^5.2.0",
+    "telegraf": "^4.16.3",
+    "yt-dlp-wrap": "^2.3.13"
+  }
+}
