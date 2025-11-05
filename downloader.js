@@ -1,60 +1,52 @@
+// downloader.js — يستخدم yt-dlp-wrap مع تنزيل الباينري تلقائياً على Render
+const fs = require('fs');
 const path = require('path');
-const fs = require('fs/promises');
 const YTDlpWrap = require('yt-dlp-wrap').default;
-const ffmpegPath = require('ffmpeg-static'); // مسار ffmpeg الثابت
+const ffmpegPath = require('ffmpeg-static');
 
-const ytdlp = new YTDlpWrap(); // يجلب الثنائي إذا لزم
+const BIN_DIR = path.join(__dirname, 'bin');
+const BIN_PATH = path.join(BIN_DIR, process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp');
+const OUT_DIR = path.join(__dirname, 'downloads');
 
-const OUT_DIR = path.join(process.cwd(), 'downloads');
-async function ensureOutDir() {
-  try { await fs.mkdir(OUT_DIR, { recursive: true }); } catch {}
-}
-
-function buildArgs(url) {
-  const args = [
-    '--no-warnings',
-    '--ffmpeg-location', ffmpegPath,
-    '-f', 'bv*+ba/b',                 // أفضل توليفة
-    '--merge-output-format', 'mp4',
-    '-N', '4',                        // concurrent fragments
-    '-R', '10',                       // retries
-    '--fragment-retries', '10',
-    '--retry-sleep', 'linear=1:10',
-    '--socket-timeout', '30',
-    '--no-part',
-    '--newline',
-    url,
-    '-o', path.join(OUT_DIR, '%(title).80s.%(ext)s')
-  ];
-
-  const cookies = process.env.COOKIES_FILE;
-  if (cookies) args.unshift('--cookies', cookies);
-  return args;
+async function ensureBinary() {
+  await fs.promises.mkdir(BIN_DIR, { recursive: true });
+  if (!fs.existsSync(BIN_PATH)) {
+    // ينزّل yt-dlp من GitHub داخل مجلد المشروع (مطلوب على Render)
+    await YTDlpWrap.downloadFromGithub(BIN_PATH);
+  }
+  return new YTDlpWrap(BIN_PATH);
 }
 
 async function downloadVideo(url) {
-  await ensureOutDir();
-  const args = buildArgs(url);
+  await fs.promises.mkdir(OUT_DIR, { recursive: true });
+  const ytdlp = await ensureBinary();
+  const outTpl = path.join(OUT_DIR, '%(title)s.%(ext)s');
 
   return new Promise((resolve, reject) => {
-    let lastOut = '';
-    const proc = ytdlp.exec(args);
+    const args = [
+      url,
+      '-o', outTpl,
+      '--no-playlist',
+      '-S', 'res,ext:mp4:m4a'
+    ];
+    if (ffmpegPath) args.push('--ffmpeg-location', ffmpegPath);
 
-    proc.stdout.on('data', d => {
-      lastOut = d.toString(); // للتشخيص
-      if (process.env.NODE_ENV !== 'production') process.stdout.write(d);
-    });
-    proc.stderr.on('data', e => {
-      if (process.env.NODE_ENV !== 'production') process.stderr.write(e);
-    });
-    proc.on('error', reject);
-    proc.on('close', async (code) => {
-      if (code !== 0) return reject(new Error(`yt-dlp exit ${code}: ${lastOut}`));
-      // ابحث عن اسم الملف من السطر الأخير أو التقط آخر ملف تم إنشاؤه
-      const files = await fs.readdir(OUT_DIR);
-      const stats = await Promise.all(files.map(async f => ({ f, t: (await fs.stat(path.join(OUT_DIR, f))).mtimeMs })));
-      stats.sort((a, b) => b.t - a.t);
-      resolve(path.join(OUT_DIR, stats[0].f));
+    const child = ytdlp.exec(args);        // لن تكون undefined
+    child.on('error', reject);
+    child.on('close', async (code) => {
+      if (code !== 0) return reject(new Error('yt-dlp exited with code ' + code));
+      try {
+        const files = await fs.promises.readdir(OUT_DIR);
+        const stats = await Promise.all(files.map(async f => {
+          const p = path.join(OUT_DIR, f);
+          const s = await fs.promises.stat(p);
+          return { p, t: s.mtimeMs };
+        }));
+        stats.sort((a, b) => b.t - a.t);
+        const last = stats[0]?.p;
+        if (!last) return reject(new Error('no output file'));
+        resolve(last);
+      } catch (e) { reject(e); }
     });
   });
 }
