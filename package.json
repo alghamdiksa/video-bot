@@ -9,7 +9,8 @@
     "start": "node index.js",
     "dev": "NODE_ENV=development node index.js",
     "set:webhook": "node index.js --set-webhook",
-    "del:webhook": "node index.js --delete-webhook"
+    "del:webhook": "node index.js --delete-webhook",
+    "postinstall": "mkdir -p bin && curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o bin/yt-dlp && chmod +x bin/yt-dlp"
   },
   "dependencies": {
     "dotenv": "^16.4.5",
