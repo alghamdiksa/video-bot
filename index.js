@@ -1,4 +1,4 @@
-// index.js — Telegraf + Express + yt-dlp (Webhook على Render، Polling محلياً)
+// index.js — Video Bot (Telegraf + Express + yt-dlp)
 require('dotenv').config();
 const express = require('express');
 const { Telegraf, Markup } = require('telegraf');
@@ -10,76 +10,58 @@ if (!BOT_TOKEN) throw new Error('BOT_TOKEN missing');
 const bot = new Telegraf(BOT_TOKEN);
 const app = express();
 
-const PORT   = process.env.PORT || 10000;
+const PORT = process.env.PORT || 10000;
 const SECRET = process.env.WEBHOOK_SECRET || 'secret';
 const BASE_URL = process.env.APP_BASE_URL;
 
-// لتتبع حالة التشغيل (Polling فقط)
-let launchedWithPolling = false;
-
-// صحّة الخدمة لـ Render
+// Health check لـ Render
 app.get('/health', (_req, res) => res.status(200).send('ok'));
 
-// صفحة جذر اختيارية (تشخيص)
-app.get('/', (_req, res) => res.status(200).send('video-bot up'));
-
-// Webhook endpoint (Telegraf middleware)
+// Webhook endpoint
 app.use(bot.webhookCallback(`/tg/${SECRET}`));
 
-// أوامر
-bot.start((ctx) =>
-  ctx.reply('أرسل رابط فيديو (YouTube/Instagram...) وسأحاول تنزيله.', Markup.removeKeyboard())
-);
-bot.help((ctx) =>
-  ctx.reply('أرسل رابط يبدأ بـ http/https. بعض المواقع (مثل إنستقرام) قد تحتاج cookies.txt صالح.')
-);
+// الأوامر الأساسية
+bot.start((ctx) => ctx.reply('👋 أرسل رابط فيديو وسأقوم بتحميله لك.', Markup.removeKeyboard()));
+bot.help((ctx) => ctx.reply('أرسل رابط فيديو يبدأ بـ http أو https.\nقد تحتاج cookies لبعض المواقع مثل إنستقرام.'));
 
-// معالجة الروابط النصية
+// استقبال الروابط
 bot.on('text', async (ctx) => {
   const url = (ctx.message.text || '').trim();
-  if (!/^https?:\/\//i.test(url)) return ctx.reply('أرسل رابط صحيح يبدأ بـ http أو https.');
+  if (!/^https?:\/\//i.test(url)) return ctx.reply('❌ أرسل رابط صحيح يبدأ بـ http أو https.');
 
-  const note = await ctx.reply('⏳ يحاول التنزيل...');
+  const note = await ctx.reply('⏳ جاري التحميل...');
   try {
     const filePath = await downloadVideo(url);
     await ctx.replyWithVideo({ source: filePath });
   } catch (e) {
-    console.error('[download error]', e);
-    await ctx.reply('تعذر التنزيل حالياً. جرّب رابطاً آخر أو حدّث الكوكيز ثم أعد المحاولة.');
+    console.error(e);
+    await ctx.reply('⚠️ تعذر التحميل. حاول لاحقاً أو تحقق من الرابط.');
   } finally {
     try { await ctx.telegram.deleteMessage(ctx.chat.id, note.message_id); } catch {}
   }
 });
 
-// تشغيل HTTP + ضبط الويب هوك أو Polling محلياً
+// تشغيل السيرفر وضبط الويب هوك
 app.listen(PORT, async () => {
   console.log(`HTTP health server at :${PORT}`);
-
   if (BASE_URL) {
     const webhookUrl = `${BASE_URL}/tg/${SECRET}`;
     try {
       await bot.telegram.setWebhook(webhookUrl);
       console.log('Webhook set to', webhookUrl);
     } catch (e) {
-      console.warn('Failed to set webhook on boot:', e.message);
+      console.warn('Failed to set webhook:', e.message);
     }
   } else {
-    // تشغيل محلي (بدون BASE_URL): Polling
-    try {
-      await bot.launch();
-      launchedWithPolling = true;
-      console.log('Bot started with long polling');
-    } catch (e) {
-      console.error('Failed to launch bot (polling):', e);
-    }
+    bot.launch().then(() => console.log('Bot started with polling'));
   }
 });
 
-// إنهاء نظيف: أوقف البوت فقط إذا كان يعمل بـ Polling
-process.on('SIGINT',  () => { try { if (launchedWithPolling) bot.stop('SIGINT');  } catch {} process.exit(0); });
-process.on('SIGTERM', () => { try { if (launchedWithPolling) bot.stop('SIGTERM'); } catch {} process.exit(0); });
+// إيقاف السيرفر بدون استدعاء bot.stop لتجنب الخطأ
+process.on('SIGINT',  () => process.exit(0));
+process.on('SIGTERM', () => process.exit(0));
 
-// أوامر CLI لاستخدامها من الـ Shell في Render
+// أوامر الـ CLI لتعيين أو حذف الـ webhook يدويًا
 if (process.argv.includes('--set-webhook')) {
   (async () => {
     if (!BASE_URL) throw new Error('APP_BASE_URL not set');
