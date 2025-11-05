@@ -1,98 +1,87 @@
-// downloader.js — yt-dlp-wrap مع تنزيل الباينري مباشرة + دعم الكوكيز
 const fs = require('fs');
 const path = require('path');
-const https = require('https');
-const YTDlpWrap = require('yt-dlp-wrap').default;
-const ffmpegPath = require('ffmpeg-static');
+const { default: YTDlpWrap } = require('yt-dlp-wrap');
+require('dotenv').config();
 
-const BIN_DIR  = path.join(__dirname, 'bin');
-const BIN_PATH = path.join(BIN_DIR, process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp');
-const OUT_DIR  = path.join(__dirname, 'downloads');
+const downloadsDir = path.join(__dirname, 'downloads');
+if (!fs.existsSync(downloadsDir)) fs.mkdirSync(downloadsDir, { recursive: true });
 
-// تنزيل مباشر بدون استدعاء API (نتجاوز Rate-Limit)
-async function downloadDirect(url, dest) {
-  await new Promise((resolve, reject) => {
-    const ua = { headers: { 'User-Agent': 'curl/8' }, timeout: 15000 };
-    const handle = res => {
-      // اتّبع التحويل 302 إلى ملف الإصدار
-      if (res.statusCode === 301 || res.statusCode === 302) {
-        const loc = res.headers.location;
-        if (!loc) return reject(new Error('No redirect location'));
-        https.get(loc, ua, handle).on('error', reject);
-        return;
-      }
-      if (res.statusCode !== 200) {
-        return reject(new Error(`HTTP ${res.statusCode} when downloading yt-dlp`));
-      }
-      const file = fs.createWriteStream(dest);
-      res.pipe(file);
-      file.on('finish', () => file.close(resolve));
-      file.on('error', reject);
-    };
-    https.get(url, ua, handle).on('error', reject);
-  });
-}
-
-async function ensureBinary() {
-  await fs.promises.mkdir(BIN_DIR, { recursive: true });
-  if (!fs.existsSync(BIN_PATH)) {
-    const fallbackUrl =
-      process.env.YTDLP_URL ||
-      'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp';
-    await downloadDirect(fallbackUrl, BIN_PATH);
-    await fs.promises.chmod(BIN_PATH, 0o755);
+/**
+ * اختيار ملف الكوكيز تلقائياً حسب المنصة.
+ * أولوية أعلى لمتغير البيئة COOKIES_FILE إذا تم تعيينه.
+ */
+function resolveCookiesPath(url) {
+  // إن تم تحديده يدوياً في Render نستخدمه كما هو
+  if (process.env.COOKIES_FILE) {
+    const p = path.resolve(__dirname, process.env.COOKIES_FILE);
+    return fs.existsSync(p) ? p : null;
   }
-  return new YTDlpWrap(BIN_PATH);
+
+  // اختيار تلقائي
+  const instagram = /(^|\/\/)www\.?instagram\.com\//i.test(url);
+  const youtube = /(youtube\.com|youtu\.be)/i.test(url);
+
+  const pInstagram = path.join(__dirname, 'cookies', 'instagram_cookies.txt');
+  const pYoutube   = path.join(__dirname, 'cookies', 'youtube_cookies.txt');
+
+  if (instagram && fs.existsSync(pInstagram)) return pInstagram;
+  if (youtube   && fs.existsSync(pYoutube))   return pYoutube;
+
+  return null; // بدون كوكيز
 }
 
+/**
+ * تنزيل فيديو وإرجاع المسار النهائي للملف الناتج.
+ */
 async function downloadVideo(url) {
-  await fs.promises.mkdir(OUT_DIR, { recursive: true });
-  const ytdlp = await ensureBinary();
+  const cookiesPath = resolveCookiesPath(url);
 
-  const outTpl = path.join(OUT_DIR, '%(title)s.%(ext)s');
-  const ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36';
+  // اسم الملف الناتج
+  const outTemplate = path.join(downloadsDir, '%(title).150s.%(ext)s');
 
+  // yt-dlp args
   const args = [
-    url,
-    '-o', outTpl,
+    '-N', '4',                 // multi-thread chunks
     '--no-playlist',
-    '--restrict-filenames',
-    '-S', 'res,ext:mp4:m4a',
-    '--add-header', `User-Agent:${ua}`,
-    '--force-ipv4',
-    '--concurrent-fragments', '1'
+    '--no-warnings',
+    '--force-overwrites',
+    '-o', outTemplate,
+    url
   ];
 
-  if (ffmpegPath) {
-    args.push('--ffmpeg-location', ffmpegPath);
+  if (cookiesPath) {
+    args.unshift(cookiesPath);
+    args.unshift('--cookies');
   }
 
-  // دعم الكوكيز (يوتيوب/إنستقرام)
-  const cookiesFile = process.env.COOKIES_FILE;
-  if (cookiesFile) {
-    args.push('--cookies', cookiesFile);
-  }
-
+  // تشغيل yt-dlp
   return new Promise((resolve, reject) => {
-    const child = ytdlp.exec(args);
-    child.on('error', reject);
-    child.on('close', async code => {
-      if (code !== 0) return reject(new Error('yt-dlp exited with code ' + code));
-      try {
-        const files = await fs.promises.readdir(OUT_DIR);
-        if (!files.length) return reject(new Error('no output file'));
-        // اختر أحدث ملف
-        const withTime = await Promise.all(files.map(async f => {
-          const p = path.join(OUT_DIR, f);
-          const s = await fs.promises.stat(p);
-          return { p, t: s.mtimeMs };
-        }));
-        withTime.sort((a, b) => b.t - a.t);
-        resolve(withTime[0].p);
-      } catch (e) {
-        reject(e);
-      }
-    });
+    let lastPath = '';
+    const ytdlp = new YTDlpWrap();
+
+    // التقاط اسم الملف الحقيقي بعد التنزيل
+    ytdlp.exec(args)
+      .on('ytDlpEvent', (e) => {
+        // محاولة استخراج المسار من السطر
+        if (typeof e === 'string') {
+          const m = e.match(/Destination:\s(.+)$/i) || e.match(/\[download\]\s(.+\.(mp4|mkv|webm|mov|mp3))/i);
+          if (m) lastPath = m[1].trim();
+        }
+      })
+      .on('error', reject)
+      .on('close', (code) => {
+        if (code === 0) {
+          // إن لم نلتقط الاسم، خمن أول ملف أحدث في مجلد التنزيلات
+          if (!lastPath) {
+            const files = fs.readdirSync(downloadsDir)
+              .map(f => ({ f, t: fs.statSync(path.join(downloadsDir, f)).mtimeMs }))
+              .sort((a, b) => b.t - a.t);
+            if (files[0]) lastPath = path.join(downloadsDir, files[0].f);
+          }
+          return resolve(lastPath);
+        }
+        reject(new Error(`yt-dlp exited with code ${code}`));
+      });
   });
 }
 
