@@ -1,4 +1,3 @@
-// index.js — Video Bot (Telegraf + Express + yt-dlp)
 require('dotenv').config();
 const express = require('express');
 const { Telegraf, Markup } = require('telegraf');
@@ -7,41 +6,46 @@ const { downloadVideo } = require('./downloader');
 const BOT_TOKEN = process.env.BOT_TOKEN;
 if (!BOT_TOKEN) throw new Error('BOT_TOKEN missing');
 
-const bot = new Telegraf(BOT_TOKEN);
 const app = express();
+const bot = new Telegraf(BOT_TOKEN);
 
 const PORT = process.env.PORT || 10000;
 const SECRET = process.env.WEBHOOK_SECRET || 'secret';
 const BASE_URL = process.env.APP_BASE_URL;
 
-// Health check لـ Render
+// Healthcheck لِـ Render
 app.get('/health', (_req, res) => res.status(200).send('ok'));
 
 // Webhook endpoint
 app.use(bot.webhookCallback(`/tg/${SECRET}`));
 
-// الأوامر الأساسية
-bot.start((ctx) => ctx.reply('👋 أرسل رابط فيديو وسأقوم بتحميله لك.', Markup.removeKeyboard()));
-bot.help((ctx) => ctx.reply('أرسل رابط فيديو يبدأ بـ http أو https.\nقد تحتاج cookies لبعض المواقع مثل إنستقرام.'));
+// أوامر
+bot.start(ctx => ctx.reply(
+  'أرسل رابط فيديو من YouTube/Instagram وسأحاول تنزيله.',
+  Markup.removeKeyboard()
+));
+bot.help(ctx => ctx.reply(
+  '• أرسل رابط يبدأ بـ http/https.\n• إنستقرام غالباً يحتاج كوكيز.\n• حدّث الكوكيز إذا ظهر Rate Limit.'
+));
 
-// استقبال الروابط
+// المعالجة
 bot.on('text', async (ctx) => {
   const url = (ctx.message.text || '').trim();
-  if (!/^https?:\/\//i.test(url)) return ctx.reply('❌ أرسل رابط صحيح يبدأ بـ http أو https.');
+  if (!/^https?:\/\//i.test(url)) return ctx.reply('أرسل رابط صحيح http/https.');
 
-  const note = await ctx.reply('⏳ جاري التحميل...');
+  const wait = await ctx.reply('⏳ يحاول التنزيل...');
   try {
     const filePath = await downloadVideo(url);
     await ctx.replyWithVideo({ source: filePath });
   } catch (e) {
-    console.error(e);
-    await ctx.reply('⚠️ تعذر التحميل. حاول لاحقاً أو تحقق من الرابط.');
+    console.error('Download error:', e?.stderr || e?.message || e);
+    await ctx.reply('تعذّر التنزيل. جرّب رابطاً آخر أو حدّث الكوكيز.');
   } finally {
-    try { await ctx.telegram.deleteMessage(ctx.chat.id, note.message_id); } catch {}
+    try { await ctx.telegram.deleteMessage(ctx.chat.id, wait.message_id); } catch {}
   }
 });
 
-// تشغيل السيرفر وضبط الويب هوك
+// تشغيل HTTP + ضبط Webhook عند توفر BASE_URL
 app.listen(PORT, async () => {
   console.log(`HTTP health server at :${PORT}`);
   if (BASE_URL) {
@@ -53,15 +57,15 @@ app.listen(PORT, async () => {
       console.warn('Failed to set webhook:', e.message);
     }
   } else {
-    bot.launch().then(() => console.log('Bot started with polling'));
+    bot.launch().then(() => console.log('Bot started with long polling'));
   }
 });
 
-// إيقاف السيرفر بدون استدعاء bot.stop لتجنب الخطأ
-process.on('SIGINT',  () => process.exit(0));
-process.on('SIGTERM', () => process.exit(0));
+// إيقاف نظيف
+process.on('SIGINT', () => bot.stop('SIGINT'));
+process.on('SIGTERM', () => bot.stop('SIGTERM'));
 
-// أوامر الـ CLI لتعيين أو حذف الـ webhook يدويًا
+// CLI helpers اختيارية
 if (process.argv.includes('--set-webhook')) {
   (async () => {
     if (!BASE_URL) throw new Error('APP_BASE_URL not set');
@@ -72,7 +76,6 @@ if (process.argv.includes('--set-webhook')) {
     process.exit(0);
   })();
 }
-
 if (process.argv.includes('--delete-webhook')) {
   (async () => {
     console.log('Deleting webhook');
