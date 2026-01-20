@@ -1,7 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const { Telegraf, Markup } = require('telegraf');
-const { downloadVideoWithRetry } = require('./downloader'); // ✅ التعديل هنا
+const { downloadVideoWithRetry } = require('./downloader');
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 if (!BOT_TOKEN) throw new Error('BOT_TOKEN missing');
@@ -37,23 +37,8 @@ bot.on('text', async (ctx) => {
   try {
     const filePath = await downloadVideoWithRetry(url, {
       maxRetries: 3,
-      delayMs: 5000,
-      onRetry: async ({ attempt, maxRetries }) => {
-        // attempt = 1 يعني فشلت الأولى والآن سيبدأ المحاولة 2
-        const nextAttempt = attempt + 1;
-        if (nextAttempt <= maxRetries) {
-          try {
-            await ctx.reply(`⏳ تعذّر التنزيل. إعادة المحاولة (${nextAttempt}/${maxRetries})...`);
-          } catch {}
-        }
-      }
+      delayMs: 5000
     });
-
-    // لو الدالة رجعت null/undefined لأي سبب، اعتبرها فشل
-    if (!filePath) {
-      await ctx.reply('تعذّر التنزيل بعد 3 محاولات. جرّب رابطاً آخر أو حدّث الكوكيز.');
-      return;
-    }
 
     await ctx.replyWithVideo({ source: filePath });
   } catch (e) {
@@ -80,9 +65,9 @@ app.listen(PORT, async () => {
   }
 });
 
-// إيقاف نظيف
-process.on('SIGINT', () => bot.stop('SIGINT'));
-process.on('SIGTERM', () => bot.stop('SIGTERM'));
+// إيقاف نظيف (بدون كراش لو البوت مو شغال)
+process.on('SIGINT', () => { try { bot.stop('SIGINT'); } catch {} });
+process.on('SIGTERM', () => { try { bot.stop('SIGTERM'); } catch {} });
 
 // CLI helpers اختيارية
 if (process.argv.includes('--set-webhook')) {
