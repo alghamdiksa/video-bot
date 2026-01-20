@@ -1,7 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const { Telegraf, Markup } = require('telegraf');
-const { downloadVideo } = require('./downloader');
+const { downloadVideoWithRetry } = require('./downloader'); // ✅ التعديل هنا
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 if (!BOT_TOKEN) throw new Error('BOT_TOKEN missing');
@@ -35,11 +35,30 @@ bot.on('text', async (ctx) => {
 
   const wait = await ctx.reply('⏳ يحاول التنزيل...');
   try {
-    const filePath = await downloadVideo(url);
+    const filePath = await downloadVideoWithRetry(url, {
+      maxRetries: 3,
+      delayMs: 5000,
+      onRetry: async ({ attempt, maxRetries }) => {
+        // attempt = 1 يعني فشلت الأولى والآن سيبدأ المحاولة 2
+        const nextAttempt = attempt + 1;
+        if (nextAttempt <= maxRetries) {
+          try {
+            await ctx.reply(`⏳ تعذّر التنزيل. إعادة المحاولة (${nextAttempt}/${maxRetries})...`);
+          } catch {}
+        }
+      }
+    });
+
+    // لو الدالة رجعت null/undefined لأي سبب، اعتبرها فشل
+    if (!filePath) {
+      await ctx.reply('تعذّر التنزيل بعد 3 محاولات. جرّب رابطاً آخر أو حدّث الكوكيز.');
+      return;
+    }
+
     await ctx.replyWithVideo({ source: filePath });
   } catch (e) {
     console.error('Download error:', e?.stderr || e?.message || e);
-    await ctx.reply('تعذّر التنزيل. جرّب رابطاً آخر أو حدّث الكوكيز.');
+    await ctx.reply('تعذّر التنزيل بعد 3 محاولات. جرّب رابطاً آخر أو حدّث الكوكيز.');
   } finally {
     try { await ctx.telegram.deleteMessage(ctx.chat.id, wait.message_id); } catch {}
   }
