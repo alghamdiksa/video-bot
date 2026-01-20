@@ -28,24 +28,49 @@ bot.help(ctx => ctx.reply(
   '• أرسل رابط يبدأ بـ http/https.\n• إنستقرام غالباً يحتاج كوكيز.\n• حدّث الكوكيز إذا ظهر Rate Limit.'
 ));
 
-// المعالجة
+/**
+ * Dedup: منع تنفيذ نفس الرسالة مرتين (حتى لو وصلت من تيليجرام ثانية)
+ * هذا ضروري مع webhook لأن نفس update قد يصل أكثر من مرة. :contentReference[oaicite:2]{index=2}
+ */
+const seen = new Map(); // key => timestamp
+const SEEN_TTL_MS = 2 * 60 * 1000;
+
+function seenCleanup() {
+  const now = Date.now();
+  for (const [k, t] of seen.entries()) {
+    if (now - t > SEEN_TTL_MS) seen.delete(k);
+  }
+}
+
 bot.on('text', async (ctx) => {
+  seenCleanup();
+
+  const chatId = ctx.chat?.id;
+  const messageId = ctx.message?.message_id;
+
+  const key = `${chatId}:${messageId}`;
+  if (seen.has(key)) return;     // ✅ تجاهل التكرار فوراً
+  seen.set(key, Date.now());     // ✅ سجّلها
+
   const url = (ctx.message.text || '').trim();
   if (!/^https?:\/\//i.test(url)) return ctx.reply('أرسل رابط صحيح http/https.');
 
   const wait = await ctx.reply('⏳ يحاول التنزيل...');
+
   try {
+    // ✅ هنا فقط 3 محاولات ثم توقف
     const filePath = await downloadVideoWithRetry(url, {
       maxRetries: 3,
       delayMs: 5000
     });
 
     await ctx.replyWithVideo({ source: filePath });
+
   } catch (e) {
     console.error('Download error:', e?.stderr || e?.message || e);
     await ctx.reply('تعذّر التنزيل بعد 3 محاولات. جرّب رابطاً آخر أو حدّث الكوكيز.');
   } finally {
-    try { await ctx.telegram.deleteMessage(ctx.chat.id, wait.message_id); } catch {}
+    try { await ctx.telegram.deleteMessage(chatId, wait.message_id); } catch {}
   }
 });
 
@@ -68,23 +93,3 @@ app.listen(PORT, async () => {
 // إيقاف نظيف (بدون كراش لو البوت مو شغال)
 process.on('SIGINT', () => { try { bot.stop('SIGINT'); } catch {} });
 process.on('SIGTERM', () => { try { bot.stop('SIGTERM'); } catch {} });
-
-// CLI helpers اختيارية
-if (process.argv.includes('--set-webhook')) {
-  (async () => {
-    if (!BASE_URL) throw new Error('APP_BASE_URL not set');
-    const url = `${BASE_URL}/tg/${SECRET}`;
-    console.log('Setting webhook to', url);
-    await bot.telegram.setWebhook(url);
-    console.log('Done');
-    process.exit(0);
-  })();
-}
-if (process.argv.includes('--delete-webhook')) {
-  (async () => {
-    console.log('Deleting webhook');
-    await bot.telegram.deleteWebhook();
-    console.log('Done');
-    process.exit(0);
-  })();
-}
