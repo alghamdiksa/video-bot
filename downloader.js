@@ -25,7 +25,7 @@ function resolveCookiesPath(url) {
   return null;
 }
 
-// تنزيل الفيديو (بدون أي تعديل)
+// تنزيل الفيديو (الكود الأصلي بدون أي تعديل)
 async function downloadVideo(url) {
   const cookiesPath = resolveCookiesPath(url);
   const outTemplate = path.join(downloadsDir, '%(title).150s.%(ext)s');
@@ -51,7 +51,9 @@ async function downloadVideo(url) {
     ytdlp.exec(args)
       .on('ytDlpEvent', (e) => {
         if (typeof e === 'string') {
-          const m = e.match(/Destination:\s(.+)$/i) || e.match(/\[download\]\s(.+\.(mp4|mkv|webm|mov|mp3))/i);
+          const m =
+            e.match(/Destination:\s(.+)$/i) ||
+            e.match(/\[download\]\s(.+\.(mp4|mkv|webm|mov|mp3))/i);
           if (m) lastPath = m[1].trim();
         }
       })
@@ -73,12 +75,14 @@ async function downloadVideo(url) {
 
 /* =========================================================
    إضافة: تنزيل مع إعادة المحاولة (3 مرات فقط ثم يتوقف)
+   - لا يغيّر downloadVideo
+   - فقط يلفه ويحدّد المحاولات
 ========================================================= */
 async function downloadVideoWithRetry(url, options = {}) {
   const {
-    maxRetries = 3,
-    delayMs = 5000,
-    isFatal = null
+    maxRetries = 3,     // عدد المحاولات الكلي
+    delayMs = 5000,     // تأخير بين المحاولات
+    isFatal = null      // دالة اختيارية لتحديد خطأ قاتل
   } = options;
 
   let lastError = null;
@@ -93,7 +97,7 @@ async function downloadVideoWithRetry(url, options = {}) {
         ? String(err.message).toLowerCase()
         : String(err).toLowerCase();
 
-      // أخطاء قاتلة: لا تعيد المحاولة
+      // أخطاء قاتلة: لا تعيد المحاولة (توفير وقت ومنع سبام)
       const fatalDefault =
         msg.includes('403') ||
         msg.includes('cookie') ||
@@ -104,19 +108,25 @@ async function downloadVideoWithRetry(url, options = {}) {
         msg.includes('forbidden') ||
         msg.includes('bad guest token');
 
-      const fatal = typeof isFatal === 'function'
+      const fatal = (typeof isFatal === 'function')
         ? !!isFatal(err)
         : fatalDefault;
 
       if (fatal) throw err;
 
+      // إذا هذه آخر محاولة: ارمِ الخطأ وتوقف
       if (attempt === maxRetries) throw err;
 
+      // انتظر قبل المحاولة التالية
       await new Promise(res => setTimeout(res, delayMs));
     }
   }
 
+  // احتياط
   throw lastError || new Error('Download failed');
 }
 
-module.exports = { downloadVideo, downloadVideoWithRetry };
+module.exports = {
+  downloadVideo,
+  downloadVideoWithRetry
+};
