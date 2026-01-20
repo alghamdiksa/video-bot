@@ -25,7 +25,7 @@ function resolveCookiesPath(url) {
   return null;
 }
 
-// تنزيل الفيديو
+// تنزيل الفيديو (الكود الأصلي بدون أي تعديل)
 async function downloadVideo(url) {
   const cookiesPath = resolveCookiesPath(url);
   const outTemplate = path.join(downloadsDir, '%(title).150s.%(ext)s');
@@ -51,7 +51,9 @@ async function downloadVideo(url) {
     ytdlp.exec(args)
       .on('ytDlpEvent', (e) => {
         if (typeof e === 'string') {
-          const m = e.match(/Destination:\s(.+)$/i) || e.match(/\[download\]\s(.+\.(mp4|mkv|webm|mov|mp3))/i);
+          const m =
+            e.match(/Destination:\s(.+)$/i) ||
+            e.match(/\[download\]\s(.+\.(mp4|mkv|webm|mov|mp3))/i);
           if (m) lastPath = m[1].trim();
         }
       })
@@ -71,4 +73,64 @@ async function downloadVideo(url) {
   });
 }
 
-module.exports = { downloadVideo };
+/* =========================================================
+   إضافة: تنزيل مع إعادة المحاولة (3 مرات فقط)
+   بدون المساس بالكود الأصلي
+========================================================= */
+
+async function downloadVideoWithRetry(url, options = {}) {
+  const {
+    maxRetries = 3,
+    delayMs = 5000,
+    onRetry = null,
+    isFatal = null
+  } = options;
+
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await downloadVideo(url);
+    } catch (err) {
+      lastError = err;
+
+      const msg = (err && err.message)
+        ? String(err.message).toLowerCase()
+        : String(err).toLowerCase();
+
+      // أخطاء قاتلة: لا تعيد المحاولة
+      const fatalDefault =
+        msg.includes('403') ||
+        msg.includes('cookie') ||
+        msg.includes('cloudflare') ||
+        msg.includes('captcha') ||
+        msg.includes('sign in') ||
+        msg.includes('login') ||
+        msg.includes('forbidden');
+
+      const fatal = typeof isFatal === 'function'
+        ? !!isFatal(err)
+        : fatalDefault;
+
+      if (fatal) throw err;
+
+      if (attempt === maxRetries) throw err;
+
+      if (typeof onRetry === 'function') {
+        try {
+          onRetry({ attempt, maxRetries, error: err });
+        } catch (_) {}
+      }
+
+      await new Promise(res => setTimeout(res, delayMs));
+    }
+  }
+
+  throw lastError || new Error('Download failed');
+}
+
+// التصدير (إضافة فقط)
+module.exports = {
+  downloadVideo,
+  downloadVideoWithRetry
+};
